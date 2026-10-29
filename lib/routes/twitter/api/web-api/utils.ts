@@ -17,16 +17,31 @@ import { baseUrl, bearerToken, gqlFeatures, gqlMap, thirdPartySupportedAPI } fro
 
 export type ApiParams = Record<string, string | number | boolean | undefined>;
 
+const isWorkerRuntime = 'WebSocketPair' in globalThis;
 let authTokenIndex = 0;
 
 const token2Cookie = async (token) => {
-    const c = await cache.get(`twitter:cookie:${token}`);
+    const c = await cache.get(`twitter:cookie-worker-v2:${token}`);
     if (c) {
         return c;
     }
     const jar = new CookieJar();
     await jar.setCookie(`auth_token=${token}`, 'https://x.com');
     try {
+        if (isWorkerRuntime) {
+            const response = await globalThis.fetch('https://x.com', {
+                headers: { cookie: jar.getCookieStringSync('https://x.com') },
+            });
+            for (const value of response.headers.getSetCookie()) {
+                jar.setCookieSync(value, 'https://x.com');
+            }
+            if (!response.ok) {
+                throw new Error('Twitter cookie initialization failed: ' + response.status);
+            }
+            const cookie = JSON.stringify(jar.serializeSync());
+            await cache.set(`twitter:cookie-worker-v2:${token}`, cookie);
+            return cookie;
+        }
         const agent = proxy.dispatcher ? proxy.dispatcher.compose(HttpCookieAgentCookie({ jar })) : new CookieAgent({ cookies: { jar } });
         if (token) {
             await ofetch('https://x.com', {
@@ -42,7 +57,7 @@ const token2Cookie = async (token) => {
             }
         }
         const cookie = JSON.stringify(jar.serializeSync());
-        cache.set(`twitter:cookie:${token}`, cookie);
+        cache.set(`twitter:cookie-worker-v2:${token}`, cookie);
         return cookie;
     } catch {
         // ignore
@@ -143,9 +158,10 @@ export const twitterGot = async (
     // previously in `onResponse` is now inlined below.
     const pathname = new URL(url).pathname;
     const clientTransactionId = /\/(?:UserTweetsAndReplies|SearchTimeline)$/.test(pathname) ? await getClientTransactionId('GET', pathname) : undefined;
-    const response = await undici.fetch(requestUrl, {
+    const response = await (isWorkerRuntime ? globalThis.fetch : undici.fetch)(requestUrl, {
         headers: {
             authority: 'x.com',
+            ...(isWorkerRuntime && dispatchers ? { cookie: dispatchers.jar.getCookieStringSync(url) } : {}),
             accept: '*/*',
             'accept-language': 'en-US,en;q=0.9',
             authorization: bearerToken,
@@ -168,7 +184,7 @@ export const twitterGot = async (
                 'x-client-transaction-id': clientTransactionId,
             }),
         },
-        dispatcher: dispatchers?.agent,
+        dispatcher: isWorkerRuntime ? undefined : dispatchers?.agent,
     });
 
     let responseData: any;
@@ -200,7 +216,7 @@ export const twitterGot = async (
             // });
             // if (newCookie) {
             //     logger.debug('twitter debug: reset twitter cookie');
-            //     await cache.set(`twitter:cookie:${auth.token}`, newCookie, config.cache.contentExpire);
+            //     await cache.set(`twitter:cookie-worker-v2:${auth.token}`, newCookie, config.cache.contentExpire);
             //     await cache.set(`${lockPrefix}${auth.token}`, '', 1);
             // } else {
             config.twitter.authToken = config.twitter.authToken?.filter((token) => token !== auth.token);
@@ -225,7 +241,7 @@ export const twitterGot = async (
 
     if (auth?.token) {
         logger.debug('twitter debug: update twitter cookie');
-        await cache.set(`twitter:cookie:${auth.token}`, JSON.stringify(dispatchers?.jar.serializeSync()), config.cache.contentExpire);
+        await cache.set(`twitter:cookie-worker-v2:${auth.token}`, JSON.stringify(dispatchers?.jar.serializeSync()), config.cache.contentExpire);
     }
 
     return responseData;
