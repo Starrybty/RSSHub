@@ -1,0 +1,147 @@
+name: Update RSSHub on Cloudflare
+
+on:
+    schedule:
+        - cron: '23 0 * * 1'
+    workflow_dispatch:
+        inputs:
+            deploy:
+                description: Publish the validated update to Cloudflare through master
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+concurrency:
+    group: rsshub-cloudflare-update
+    cancel-in-progress: false
+
+jobs:
+    validate:
+        if: github.repository == 'Starrybty/RSSHub' && github.ref == 'refs/heads/master'
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        outputs:
+            candidate: ${{ steps.merge.outputs.candidate }}
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+            - name: Prepare upstream update
+              id: merge
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  git config user.name 'github-actions[bot]'
+                  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+                  base=$(git rev-parse HEAD)
+                  git fetch --no-tags https://github.com/DIYgod/RSSHub.git refs/heads/master
+                  upstream=$(git rev-parse FETCH_HEAD)
+                  previous=$(git log --first-parent -1 --grep='^RSSHub-Upstream: '                       --format='%(trailers:key=RSSHub-Upstream,valueonly)' "$base")
+
+                  if [[ "$upstream" == "$previous" ]] || git merge-base --is-ancestor "$upstream" "$base"; then
+                      echo 'Already up to date.' >> "$GITHUB_STEP_SUMMARY"
+                      exit 0
+                  fi
+
+                  if [[ -n "$previous" ]]; then
+                      # Anchor the three-way merge to the last upstream commit included in production.
+                      git merge-base --is-ancestor "$previous" "$upstream"
+                      git switch --detach "$(git commit-tree "$base^{tree}" -p "$base" -p "$previous" -m 'Prepare upstream merge')"
+                  else
+                      # Reuse the reviewed merge that reconciled the fork's Cloudflare X fetch patch.
+                      seed=abd20d80a5b542260478c78bce79687f3f345142
+                      if ! git merge-base --is-ancestor "$seed" "$base"; then
+                          git fetch --no-tags origin "$seed"
+                          git merge --quiet --no-edit --no-ff "$seed"
+                      fi
+                  fi
+
+                  git merge --no-commit --no-ff "$upstream" || test -f "$(git rev-parse --git-path MERGE_HEAD)"
+                  # Keep the fork's deployment configuration and existing workflow definitions.
+                  git restore --source="$base" --staged --worktree -- .github/workflows wrangler.free.toml
+                  if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+                      git diff --name-only --diff-filter=U
+                      echo '::error::Upstream changes need a manual conflict resolution.'
+                      exit 1
+                  fi
+                  git diff --cached --check "$base"
+                  tree=$(git write-tree)
+                  candidate=$(git commit-tree "$tree" -p "$base"                       -m "Update RSSHub from upstream ${upstream:0:12}"                       -m "RSSHub-Upstream: $upstream")
+                  git switch --detach "$candidate"
+                  git update-ref refs/heads/validated-rsshub-update "$candidate"
+                  git bundle create "$RUNNER_TEMP/rsshub-update.bundle" refs/heads/validated-rsshub-update "^$base"
+                  echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              if: steps.merge.outputs.candidate
+              with:
+                  node-version: 26
+                  package-manager-cache: false
+            - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+              if: steps.merge.outputs.candidate
+            - name: Test and build the Worker
+              if: steps.merge.outputs.candidate
+              env:
+                  WRANGLER_SEND_METRICS: 'false'
+              run: |
+                  pnpm install --frozen-lockfile
+                  pnpm run vitest:workerd
+                  pnpm exec wrangler deploy --config wrangler.free.toml --dry-run --outdir "$RUNNER_TEMP/rsshub-worker"
+
+            - name: Verify an RSS response from the Worker
+              if: steps.merge.outputs.candidate
+              env:
+                  WRANGLER_SEND_METRICS: 'false'
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  pnpm exec wrangler dev --config wrangler.free.toml --local --port 8787                       > "$RUNNER_TEMP/rsshub-worker.log" 2>&1 &
+                  worker=$!
+                  trap 'kill "$worker" 2>/dev/null || true' EXIT
+                  if ! curl --fail --silent --show-error --max-time 5 --retry 50 --retry-delay 2                       --retry-connrefused http://127.0.0.1:8787/test/1 -o "$RUNNER_TEMP/rsshub-feed.xml"; then
+                      cat "$RUNNER_TEMP/rsshub-worker.log"
+                      exit 1
+                  fi
+                  grep -F '<rss' "$RUNNER_TEMP/rsshub-feed.xml"
+                  grep -F 'Test 1' "$RUNNER_TEMP/rsshub-feed.xml"
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: steps.merge.outputs.candidate && (github.event_name == 'schedule' || inputs.deploy)
+              with:
+                  name: rsshub-update
+                  path: ${{ runner.temp }}/rsshub-update.bundle
+                  if-no-files-found: error
+                  retention-days: 1
+
+    publish:
+        if: needs.validate.outputs.candidate && (github.event_name == 'schedule' || inputs.deploy)
+        needs: validate
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
+            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: rsshub-update
+                  path: ${{ runner.temp }}/rsshub-update
+            - name: Push the validated commit and trigger Cloudflare
+              env:
+                  CANDIDATE: ${{ needs.validate.outputs.candidate }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  git fetch "$RUNNER_TEMP/rsshub-update/rsshub-update.bundle" refs/heads/validated-rsshub-update
+                  test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE"
+                  test "$(git rev-parse "$CANDIDATE^")" = "$GITHUB_SHA"
+                  git diff --quiet "$GITHUB_SHA" "$CANDIDATE" -- .github/workflows wrangler.free.toml
+                  test "$(git ls-remote --exit-code origin refs/heads/master | cut -f1)" = "$GITHUB_SHA"
+                  git push origin "$CANDIDATE:refs/heads/master"
+                  echo "Pushed \`$CANDIDATE\` to master for Cloudflare Workers Builds." >> "$GITHUB_STEP_SUMMARY"
