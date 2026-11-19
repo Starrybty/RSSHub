@@ -71,6 +71,7 @@ jobs:
                   git diff --cached --check "$base"
                   tree=$(git write-tree)
                   candidate=$(git commit-tree "$tree" -p "$base"                       -m "Update RSSHub from upstream ${upstream:0:12}"                       -m "RSSHub-Upstream: $upstream")
+                  git merge --quit
                   git switch --detach "$candidate"
                   git update-ref refs/heads/validated-rsshub-update "$candidate"
                   git bundle create "$RUNNER_TEMP/rsshub-update.bundle" refs/heads/validated-rsshub-update "^$base"
