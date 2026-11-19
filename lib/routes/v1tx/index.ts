@@ -5,7 +5,7 @@ import pMap from 'p-map';
 import type { DataItem, Route } from '@/types';
 import cache from '@/utils/cache';
 import got from '@/utils/got';
-import { parseDate } from '@/utils/parse-date';
+import { parseDate, parseDateStrict } from '@/utils/time';
 
 export const route: Route = {
     path: '/',
@@ -48,7 +48,7 @@ async function handler() {
                 const data = JSON.parse($('script[type="application/ld+json"]').text());
                 $('.entry-content figure > picture > source, noscript').remove();
                 $('.entry-content img').each((_, img) => {
-                    if (img.attribs.src.startsWith('data:')) {
+                    if (img.attribs.src?.startsWith('data:')) {
                         img.attribs.src = img.attribs['data-lazy-src'];
                         delete img.attribs['data-lazy-src'];
                         delete img.attribs['data-lazy-srcset'];
@@ -86,11 +86,10 @@ async function handler() {
 }
 function parsePublicationDate(value?: string) {
     const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:Z|[+-]\d{2}:\d{2})$/.exec(value ?? '');
-    if (!match || !Number.isFinite(parseDate(match[1], 'YYYY-MM-DDTHH:mm:ss', true).getTime())) {
+    if (!match || !parseDateStrict(match[1], 'YYYY-MM-DDTHH:mm:ss')) {
         return;
     }
-    const date = parseDate(value!);
-    return Number.isFinite(date.getTime()) ? date : undefined;
+    return parseDate(value!);
 }
 function copyContent<T extends AnyNode>(selection: Cheerio<T>, $: CheerioAPI): Cheerio<T> {
     const nodes = selection.toArray().map((node) => cloneNode(node, true));

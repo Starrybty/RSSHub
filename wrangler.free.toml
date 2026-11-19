@@ -1,13 +1,14 @@
 name = "rsshub"
-main = "dist-worker/worker.mjs"
-compatibility_date = "2026-09-01"
-compatibility_flags = ["global_fetch_strictly_public"]
 workers_dev = true
 keep_vars = true
-find_additional_modules = true
-base_dir = "dist-worker/modules"
-rules = [{ type = "Data", globs = ["data_files/**"], fallthrough = true }]
 assets = { directory = "lib/assets" }
+compatibility_date = "2026-09-01"
+compatibility_flags = ["global_fetch_strictly_public", "temporal"]
+main = "dist-worker/worker.mjs"
+no_bundle = true
+find_additional_modules = true
+base_dir = "dist-worker"
+rules = [{ type = "ESModule", globs = ["**/*.mjs", "vendor/**/*.js"] }, { type = "CompiledWasm", globs = ["**/*.wasm"] }, { type = "Data", globs = ["data_files/**"] }]
 
 [build]
 command = "pnpm run worker-build"

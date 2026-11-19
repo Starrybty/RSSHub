@@ -4,7 +4,7 @@ import { config } from '@/config';
 import type { DataItem } from '@/types';
 import cache from '@/utils/cache';
 import ofetch from '@/utils/ofetch';
-import { parseDate } from '@/utils/parse-date';
+import { parseDate } from '@/utils/time';
 
 export const baseUrl = 'https://www.facebook.com';
 
@@ -235,6 +235,7 @@ export const storiesToItems = (stories: any[]) =>
             title: (own.text ?? shared?.text)?.split('\n', 1)[0] ?? node.actors[0].name,
             description: own.html + (shared?.html ?? ''),
             link: node.permalink_url,
+            guid: `facebook:${node.post_id}`,
             pubDate: parseDate(node.creation_time, 'X'),
             author: node.actors[0].name,
         };

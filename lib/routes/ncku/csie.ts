@@ -3,9 +3,9 @@ import { load } from 'cheerio';
 
 import type { Route } from '@/types';
 import ofetch from '@/utils/ofetch';
-import { parseDateInTimezone } from '@/utils/parse-date-in-timezone';
+import { parseDate } from '@/utils/time';
 
-const currentURL = (catagory: string, page: number) => (catagory === '_all' ? `https://www.csie.ncku.edu.tw/zh-hant/news?page=${page}` : `https://www.csie.ncku.edu.tw/zh-hant/news/${catagory}?page=${page}`);
+const currentURL = (catagory: string) => (catagory === '_all' ? 'https://www.csie.ncku.edu.tw/zh-hant/news?page=1' : `https://www.csie.ncku.edu.tw/zh-hant/news/${catagory}?page=1`);
 
 const catagories = {
     _all: '全部資訊',
@@ -53,7 +53,7 @@ export const route: Route = {
             catagory = 'normal';
         }
 
-        const $ = await ofetch<CheerioAPI>(currentURL(catagory, 1), {
+        const $ = await ofetch<CheerioAPI>(currentURL(catagory), {
             parseResponse: load,
         });
 
@@ -66,7 +66,7 @@ export const route: Route = {
                     .replaceAll('.', '-');
                 return {
                     title: $('a', e).text(),
-                    pubDate: date ? parseDateInTimezone(date, 8) : undefined,
+                    pubDate: date ? parseDate(date, 8) : undefined,
                     link: `https://www.csie.ncku.edu.tw${$('a', e).attr('href')}`,
                     category: [$('span:nth-child(2)', e).text()].filter(Boolean),
                 };
@@ -74,7 +74,7 @@ export const route: Route = {
 
         return {
             title: `成大資訊系公告 - ${catagories[catagory]}`,
-            link: currentURL(catagory, 1),
+            link: currentURL(catagory),
             item,
         };
     },
