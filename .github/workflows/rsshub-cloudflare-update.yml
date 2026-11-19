@@ -68,6 +68,36 @@ jobs:
                       echo '::error::Upstream changes need a manual conflict resolution.'
                       exit 1
                   fi
+                  # Adopt upstream's package layout while keeping our Worker, KV and runtime settings.
+                  python3 - <<'PY'
+                  import json
+                  import tomllib
+                  from pathlib import Path
+
+                  path = Path("wrangler.free.toml")
+                  prefix, marker, sections = path.read_text().partition("\n[build]\n")
+                  if not marker:
+                      raise SystemExit("Expected a [build] section in wrangler.free.toml")
+
+                  upstream = tomllib.loads(Path("wrangler.toml").read_text())
+                  keys = ("compatibility_date", "compatibility_flags", "main", "no_bundle",
+                          "find_additional_modules", "base_dir", "rules")
+
+                  def toml_value(value):
+                      if isinstance(value, dict):
+                          return "{ " + ", ".join(f"{key} = {toml_value(item)}" for key, item in value.items()) + " }"
+                      if isinstance(value, list):
+                          return "[" + ", ".join(toml_value(item) for item in value) + "]"
+                      return json.dumps(value)
+
+                  lines = [line for line in prefix.splitlines()
+                           if line.split("=", 1)[0].strip() not in keys]
+                  lines += [f"{key} = {toml_value(upstream[key])}" for key in keys if key in upstream]
+                  config = "\n".join(lines).rstrip() + "\n" + marker + sections
+                  tomllib.loads(config)
+                  path.write_text(config)
+                  PY
+                  git add wrangler.free.toml
                   git diff --cached --check "$base"
                   tree=$(git write-tree)
                   candidate=$(git commit-tree "$tree" -p "$base"                       -m "Update RSSHub from upstream ${upstream:0:12}"                       -m "RSSHub-Upstream: $upstream")
@@ -142,7 +172,7 @@ jobs:
                   git fetch "$RUNNER_TEMP/rsshub-update/rsshub-update.bundle" refs/heads/validated-rsshub-update
                   test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE"
                   test "$(git rev-parse "$CANDIDATE^")" = "$GITHUB_SHA"
-                  git diff --quiet "$GITHUB_SHA" "$CANDIDATE" -- .github/workflows wrangler.free.toml
+                  git diff --quiet "$GITHUB_SHA" "$CANDIDATE" -- .github/workflows
                   test "$(git ls-remote --exit-code origin refs/heads/master | cut -f1)" = "$GITHUB_SHA"
                   git push origin "$CANDIDATE:refs/heads/master"
                   echo "Pushed \`$CANDIDATE\` to master for Cloudflare Workers Builds." >> "$GITHUB_STEP_SUMMARY"
